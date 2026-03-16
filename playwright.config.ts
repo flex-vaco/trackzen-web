@@ -11,7 +11,7 @@ export default defineConfig({
   expect: { timeout: 10_000 },
 
   use: {
-    baseURL: 'http://localhost:5173',
+    baseURL: 'http://localhost:5605',
     trace: 'on-first-retry',
     screenshot: 'only-on-failure',
     video: 'retain-on-failure',
@@ -27,14 +27,14 @@ export default defineConfig({
   webServer: [
     {
       command: 'npm run dev',
-      cwd: '../api',
-      port: 3001,
+      cwd: '../trackzen-api',
+      port: 4002,
       reuseExistingServer: true,
       timeout: 30_000,
     },
     {
       command: 'npm run dev',
-      port: 5173,
+      port: 5605,
       reuseExistingServer: true,
       timeout: 30_000,
     },
