@@ -8,10 +8,15 @@ export interface LeaveEntry {
   color?: string;
 }
 
+export interface HolidayEntry {
+  name: string;
+  date: string | Date;
+}
+
 export interface CalendarProps {
   year: number;
   month: number; // 0-indexed (0 = January)
-  holidays?: Date[];
+  holidays?: HolidayEntry[];
   leaveEntries?: LeaveEntry[];
   onMonthChange?: (year: number, month: number) => void;
   className?: string;
@@ -30,10 +35,14 @@ export const Calendar: React.FC<CalendarProps> = ({
   onMonthChange,
   className,
 }) => {
-  const holidaySet = useMemo(
-    () => new Set(holidays.map((d) => toDateKey(d))),
-    [holidays],
-  );
+  const holidayMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const h of holidays) {
+      const d = h.date instanceof Date ? h.date : new Date(h.date);
+      map.set(toDateKey(d), h.name);
+    }
+    return map;
+  }, [holidays]);
 
   const leaveMap = useMemo(() => {
     const map = new Map<string, LeaveEntry[]>();
@@ -135,7 +144,8 @@ export const Calendar: React.FC<CalendarProps> = ({
           }
 
           const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-          const isHoliday = holidaySet.has(dateKey);
+          const holidayName = holidayMap.get(dateKey);
+          const isHoliday = !!holidayName;
           const entries = leaveMap.get(dateKey) || [];
           const today = new Date();
           const isToday =
@@ -161,6 +171,14 @@ export const Calendar: React.FC<CalendarProps> = ({
               >
                 {day}
               </span>
+              {holidayName && (
+                <div
+                  className="mt-0.5 truncate rounded bg-gray-200 px-1 py-0.5 text-[10px] font-medium text-gray-600"
+                  title={holidayName}
+                >
+                  {holidayName}
+                </div>
+              )}
               <div className="mt-0.5 space-y-0.5">
                 {entries.slice(0, 2).map((entry, i) => (
                   <div

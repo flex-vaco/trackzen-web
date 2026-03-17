@@ -117,12 +117,6 @@ export default function LeaveCalendarPage() {
     [filteredEntries],
   );
 
-  // Transform holidays to Date[]
-  const holidayDates: Date[] = useMemo(
-    () => holidays.map((h) => new Date(h.date)),
-    [holidays],
-  );
-
   const handleMonthChange = (newYear: number, newMonth: number) => {
     setYear(newYear);
     setMonth(newMonth);
@@ -173,7 +167,7 @@ export default function LeaveCalendarPage() {
       <Calendar
         year={year}
         month={month}
-        holidays={holidayDates}
+        holidays={holidays}
         leaveEntries={leaveEntries}
         onMonthChange={handleMonthChange}
       />
