@@ -10,10 +10,10 @@ export const teamService = {
   },
 
   getUserManagers(userId: number) {
-    return api.get(`/team/${userId}/managers`).then((r) => r.data);
+    return api.get(`/team/users/${userId}/managers`).then((r) => r.data);
   },
 
   assignManagers(userId: number, managerIds: number[]) {
-    return api.post(`/team/${userId}/managers`, { managerIds }).then((r) => r.data);
+    return api.put(`/team/users/${userId}/managers`, { managerIds }).then((r) => r.data);
   },
 };
