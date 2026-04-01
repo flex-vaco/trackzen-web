@@ -18,8 +18,12 @@ import {
 } from '../hooks/useTimesheets';
 import { useProjects } from '../hooks/useProjects';
 import { useHolidays } from '../hooks/useHolidays';
+import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { timesheetsService } from '../services/timesheets.service';
+import { exportMonthly } from '../services/reports.service';
+import { teamService } from '../services/team.service';
+import { usersService } from '../services/users.service';
 import {
   getWeekStart,
   getWeekEnd,
@@ -75,6 +79,8 @@ function getHolidayFlags(weekStart: Date, holidays: Holiday[]): { isHoliday: boo
 export default function TimesheetPage() {
   const [searchParams, setSearchParams] = useSearchParams();
   const { showToast } = useToast();
+  const { user } = useAuth();
+  const isManagerOrAdmin = user?.role === 'MANAGER' || user?.role === 'ADMIN';
 
   const [currentWeekStart, setCurrentWeekStart] = useState(() => getWeekStart(new Date()));
   const [timesheetId, setTimesheetId] = useState<number | undefined>(() => {
@@ -89,6 +95,18 @@ export default function TimesheetPage() {
   const [addEntryHours, setAddEntryHours] = useState(String(STANDARD_HOURS));
   const [addEntryTimeOff, setAddEntryTimeOff] = useState('0');
   const [confirmOverwriteOpen, setConfirmOverwriteOpen] = useState(false);
+
+  // Download monthly state
+  const [downloadModalOpen, setDownloadModalOpen] = useState(false);
+  const [downloadUserId, setDownloadUserId] = useState('');
+  const [isExporting, setIsExporting] = useState(false);
+
+  const { data: teamMembersRaw } = useQuery({
+    queryKey: ['download-team-members', user?.role],
+    queryFn: () => user?.role === 'ADMIN' ? usersService.list() : teamService.getMyReports(),
+    enabled: isManagerOrAdmin,
+  });
+  const teamMembers: { id: number; name: string }[] = teamMembersRaw?.data ?? [];
 
   const createTimesheet = useCreateTimesheet();
   const submitTimesheet = useSubmitTimesheet();
@@ -145,6 +163,30 @@ export default function TimesheetPage() {
       }
     }
   }, [timesheet?.id]); // eslint-disable-line
+
+  const handleDownloadMonthlyClick = () => {
+    if (isManagerOrAdmin) {
+      setDownloadUserId(String(user?.userId ?? ''));
+      setDownloadModalOpen(true);
+    } else {
+      doDownloadMonthly(user?.userId);
+    }
+  };
+
+  const doDownloadMonthly = async (targetUserId?: number) => {
+    setIsExporting(true);
+    try {
+      const yr = currentWeekStart.getFullYear();
+      const mo = currentWeekStart.getMonth() + 1;
+      await exportMonthly(targetUserId ?? user!.userId, yr, mo);
+      showToast('Monthly timesheet downloaded', 'success');
+      setDownloadModalOpen(false);
+    } catch {
+      showToast('Failed to download monthly timesheet', 'error');
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const tsStatus = (timesheet?.status as TimesheetStatus) ?? 'DRAFT';
   const canEdit = !timesheet || tsStatus === 'DRAFT' || tsStatus === 'REJECTED';
@@ -363,6 +405,9 @@ export default function TimesheetPage() {
         </div>
         <div className="flex items-center gap-2 ml-auto">
           {timesheet && <Badge variant={STATUS_VARIANT[tsStatus]}>{tsStatus.charAt(0) + tsStatus.slice(1).toLowerCase()}</Badge>}
+          <Button variant="ghost" size="sm" onClick={handleDownloadMonthlyClick} loading={isExporting}>
+            Download Monthly
+          </Button>
           <Button variant="ghost" size="sm" onClick={handleCopyPrevWeek} disabled={!canEdit || copyPrevWeek.isPending}>
             Copy Previous Week
           </Button>
@@ -620,6 +665,43 @@ export default function TimesheetPage() {
               loading={addEntryMut.isPending || updateEntryMut.isPending}
             >
               Add Entry
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      {/* Download Monthly Modal */}
+      <Modal
+        isOpen={downloadModalOpen}
+        onClose={() => setDownloadModalOpen(false)}
+        title="Download Monthly Timesheet"
+        size="sm"
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-gray-500">
+            Download timesheet for{' '}
+            <span className="font-medium text-gray-700">
+              {currentWeekStart.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })}
+            </span>
+          </p>
+          <Select
+            label="Employee"
+            value={downloadUserId}
+            onChange={(e) => setDownloadUserId(e.target.value)}
+            options={[
+              { value: String(user?.userId ?? ''), label: `${user?.name ?? 'Me'} (Myself)` },
+              ...teamMembers
+                .filter((m) => m.id !== user?.userId)
+                .map((m) => ({ value: String(m.id), label: m.name })),
+            ]}
+          />
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" onClick={() => setDownloadModalOpen(false)}>Cancel</Button>
+            <Button
+              onClick={() => doDownloadMonthly(downloadUserId ? parseInt(downloadUserId) : undefined)}
+              loading={isExporting}
+            >
+              Download Excel
             </Button>
           </div>
         </div>

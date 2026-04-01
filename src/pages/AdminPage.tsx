@@ -10,7 +10,9 @@ import { Modal } from '../components/ui/Modal';
 import { Spinner } from '../components/ui/Spinner';
 import { useSettings, useUpdateSettings } from '../hooks/useSettings';
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '../hooks/useUsers';
-import { useProjects, useCreateProject, useUpdateProject, useDeleteProject } from '../hooks/useProjects';
+import { useProjects, useCreateProject, useUpdateProject, useDeleteProject, useAssignProjectEmployees } from '../hooks/useProjects';
+import { useMyReports } from '../hooks/useTeam';
+import { useAuth } from '../context/AuthContext';
 import {
   useLeaveTypes,
   useCreateLeaveType,
@@ -481,15 +483,33 @@ function UsersTab() {
 
 function ProjectsTab() {
   const { showToast } = useToast();
+  const { user } = useAuth();
   const { data: projectsData, isLoading } = useProjects();
+  const { data: usersData } = useUsers();
+  const { data: myReports } = useMyReports();
   const createProject = useCreateProject();
   const updateProject = useUpdateProject();
   const deleteProject = useDeleteProject();
+  const assignProjectEmployees = useAssignProjectEmployees();
 
   const [modalOpen, setModalOpen] = useState(false);
   const [editingProject, setEditingProject] = useState<Project | null>(null);
+  const [assignModalOpen, setAssignModalOpen] = useState(false);
+  const [assigningProject, setAssigningProject] = useState<Project | null>(null);
+  const [selectedEmployeeIds, setSelectedEmployeeIds] = useState<number[]>([]);
 
   const projects: Project[] = projectsData?.data ?? [];
+
+  // For managers, the assignable pool is their direct reports.
+  // For admins, it's all employees.
+  const assignableEmployees = React.useMemo((): { id: number; name: string; email: string }[] => {
+    if (user?.role === 'MANAGER') {
+      return myReports?.data ?? [];
+    }
+    const allUsers: { id: number; name: string; email: string; role: string }[] =
+      usersData?.data ?? [];
+    return allUsers.filter((u) => u.role === 'EMPLOYEE');
+  }, [user?.role, myReports, usersData]);
 
   const { register, handleSubmit, reset, formState: { errors } } = useForm<{
     code: string;
@@ -517,6 +537,12 @@ function ProjectsTab() {
     setModalOpen(true);
   };
 
+  const openAssign = (p: Project) => {
+    setAssigningProject(p);
+    setSelectedEmployeeIds(p.assignedEmployees?.map((ae) => ae.employeeId) ?? []);
+    setAssignModalOpen(true);
+  };
+
   const onSubmit = async (data: Record<string, unknown>) => {
     try {
       if (editingProject) {
@@ -541,6 +567,26 @@ function ProjectsTab() {
     }
   };
 
+  const handleAssignSave = async () => {
+    if (!assigningProject) return;
+    try {
+      await assignProjectEmployees.mutateAsync({
+        id: assigningProject.id,
+        employeeIds: selectedEmployeeIds,
+      });
+      showToast('Employees assigned successfully', 'success');
+      setAssignModalOpen(false);
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error');
+    }
+  };
+
+  const toggleEmployee = (id: number) => {
+    setSelectedEmployeeIds((prev) =>
+      prev.includes(id) ? prev.filter((eid) => eid !== id) : [...prev, id],
+    );
+  };
+
   if (isLoading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -559,7 +605,7 @@ function ProjectsTab() {
       </div>
 
       <div className="overflow-x-auto rounded-xl bg-white shadow-sm">
-        <table className="w-full min-w-[800px] text-left">
+        <table className="w-full min-w-[900px] text-left">
           <thead>
             <tr className="border-b border-gray-200 bg-gray-50">
               <th className="px-4 py-3 text-xs font-semibold uppercase text-gray-500">Code</th>
@@ -568,13 +614,14 @@ function ProjectsTab() {
               <th className="px-4 py-3 text-xs font-semibold uppercase text-gray-500">Budget Hrs</th>
               <th className="px-4 py-3 text-xs font-semibold uppercase text-gray-500">Used Hrs</th>
               <th className="px-4 py-3 text-xs font-semibold uppercase text-gray-500">Status</th>
+              <th className="px-4 py-3 text-xs font-semibold uppercase text-gray-500">Employees</th>
               <th className="px-4 py-3 text-xs font-semibold uppercase text-gray-500">Actions</th>
             </tr>
           </thead>
           <tbody>
             {projects.length === 0 ? (
               <tr>
-                <td colSpan={7} className="px-4 py-10 text-center text-sm text-gray-400">
+                <td colSpan={8} className="px-4 py-10 text-center text-sm text-gray-400">
                   No projects found.
                 </td>
               </tr>
@@ -593,10 +640,18 @@ function ProjectsTab() {
                       {p.status}
                     </Badge>
                   </td>
+                  <td className="px-4 py-3 text-sm text-gray-600">
+                    {p.assignedEmployees?.length
+                      ? p.assignedEmployees.map((ae) => ae.employee.name).join(', ')
+                      : <span className="text-gray-400">None</span>}
+                  </td>
                   <td className="px-4 py-3">
                     <div className="flex items-center gap-2">
                       <Button variant="ghost" size="sm" onClick={() => openEdit(p)}>
                         Edit
+                      </Button>
+                      <Button variant="ghost" size="sm" onClick={() => openAssign(p)}>
+                        Assign
                       </Button>
                       <Button variant="danger" size="sm" onClick={() => handleDelete(p.id)}>
                         Delete
@@ -652,6 +707,56 @@ function ProjectsTab() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Assign Employees Modal */}
+      <Modal
+        isOpen={assignModalOpen}
+        onClose={() => setAssignModalOpen(false)}
+        title={`Assign Employees — ${assigningProject?.name ?? ''}`}
+        size="md"
+      >
+        <div className="space-y-4">
+          {assignableEmployees.length === 0 ? (
+            <p className="text-sm text-gray-500">
+              {user?.role === 'MANAGER'
+                ? 'You have no direct reports to assign.'
+                : 'No employees available.'}
+            </p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100 rounded-lg border border-gray-200">
+              {assignableEmployees.map((emp) => (
+                <label
+                  key={emp.id}
+                  className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-300 text-brand-primary"
+                    checked={selectedEmployeeIds.includes(emp.id)}
+                    onChange={() => toggleEmployee(emp.id)}
+                  />
+                  <div>
+                    <p className="text-sm font-medium text-gray-900">{emp.name}</p>
+                    <p className="text-xs text-gray-500">{emp.email}</p>
+                  </div>
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <Button variant="ghost" size="sm" onClick={() => setAssignModalOpen(false)} type="button">
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignSave}
+              loading={assignProjectEmployees.isPending}
+              disabled={assignableEmployees.length === 0}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
       </Modal>
     </div>
   );
@@ -1131,7 +1236,10 @@ function IntegrationsTab() {
 /* ========================================================================== */
 
 export default function AdminPage() {
-  const [activeTab, setActiveTab] = useState<AdminTab>('general');
+  const { user } = useAuth();
+  const isManager = user?.role === 'MANAGER';
+
+  const [activeTab, setActiveTab] = useState<AdminTab>(isManager ? 'projects' : 'general');
 
   const renderTab = () => {
     switch (activeTab) {
@@ -1153,6 +1261,23 @@ export default function AdminPage() {
         return <GeneralSettingsTab />;
     }
   };
+
+  // Managers only see the Projects tab
+  if (isManager) {
+    return (
+      <div className="space-y-6">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Projects</h1>
+          <p className="mt-1 text-sm text-gray-500">
+            Assign employees to projects.
+          </p>
+        </div>
+        <div className="rounded-xl bg-gray-50 p-6">
+          <ProjectsTab />
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">

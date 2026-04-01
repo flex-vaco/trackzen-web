@@ -122,6 +122,13 @@ const navSections: NavSection[] = [
     ],
   },
   {
+    title: 'Team',
+    roles: ['MANAGER'],
+    items: [
+      { label: 'Projects', icon: icons.settings, to: '/admin', roles: ['MANAGER'] },
+    ],
+  },
+  {
     title: 'Support',
     items: [
       { label: 'Help', icon: icons.help, to: '/help' },

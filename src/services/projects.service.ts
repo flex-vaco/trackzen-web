@@ -16,4 +16,8 @@ export const projectsService = {
   remove(id: number) {
     return api.delete(`/projects/${id}`).then((r) => r.data);
   },
+
+  assignEmployees(id: number, employeeIds: number[]) {
+    return api.put(`/projects/${id}/employees`, { employeeIds }).then((r) => r.data);
+  },
 };

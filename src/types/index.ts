@@ -66,6 +66,12 @@ export interface TimeEntry {
   project?: { id: number; code: string; name: string };
 }
 
+export interface ProjectMember {
+  id: number;
+  name: string;
+  email: string;
+}
+
 export interface Project {
   id: number;
   code: string;
@@ -74,6 +80,8 @@ export interface Project {
   budgetHours: number;
   usedHours: number;
   status: string;
+  managers?: { managerId: number; manager: ProjectMember }[];
+  assignedEmployees?: { employeeId: number; employee: ProjectMember }[];
 }
 
 export interface Holiday {

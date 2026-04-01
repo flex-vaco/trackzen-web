@@ -38,3 +38,14 @@ export function useDeleteProject() {
     },
   });
 }
+
+export function useAssignProjectEmployees() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, employeeIds }: { id: number; employeeIds: number[] }) =>
+      projectsService.assignEmployees(id, employeeIds),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}

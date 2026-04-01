@@ -1,5 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useToast } from '../context/ToastContext';
+import { useAuth } from '../context/AuthContext';
 import { StatCard } from '../components/ui/StatCard';
 import { Button } from '../components/ui/Button';
 import { Input } from '../components/ui/Input';
@@ -9,10 +11,11 @@ import { Spinner } from '../components/ui/Spinner';
 import { useReports } from '../hooks/useReports';
 import { useProjects } from '../hooks/useProjects';
 import { useUsers } from '../hooks/useUsers';
-import { exportReport, type ReportFilters } from '../services/reports.service';
+import { exportReport, exportMonthly, type ReportFilters } from '../services/reports.service';
+import { teamService } from '../services/team.service';
 import { formatHours } from '../utils/formatHours';
 import { getErrorMessage } from '../utils/getErrorMessage';
-import type { Project, FullUser, Timesheet } from '../types';
+import type { Project, FullUser } from '../types';
 
 /* ---------- helpers ---------- */
 
@@ -236,6 +239,9 @@ function ExportButtons({ filters, disabled }: ExportButtonsProps) {
 /* ---------- main page ---------- */
 
 export default function ReportsPage() {
+  const { user } = useAuth();
+  const { showToast } = useToast();
+
   // Filter state
   const [dateFrom, setDateFrom] = useState(getDefaultDateFrom);
   const [dateTo, setDateTo] = useState(getDefaultDateTo);
@@ -243,6 +249,34 @@ export default function ReportsPage() {
   const [projectId, setProjectId] = useState('');
   const [status, setStatus] = useState('');
   const [activeFilters, setActiveFilters] = useState<ReportFilters | undefined>(undefined);
+
+  // Monthly download state
+  const now = new Date();
+  const [dlUserId, setDlUserId] = useState('');
+  const [dlYear, setDlYear] = useState(String(now.getFullYear()));
+  const [dlMonth, setDlMonth] = useState(String(now.getMonth() + 1));
+  const [isDownloading, setIsDownloading] = useState(false);
+
+  const { data: myReportsRaw } = useQuery({
+    queryKey: ['team', 'my-reports'],
+    queryFn: () => teamService.getMyReports(),
+    enabled: user?.role === 'MANAGER' || user?.role === 'ADMIN',
+  });
+  const myReports: { id: number; name: string }[] = myReportsRaw?.data ?? [];
+
+  const handleDownloadMonthly = async () => {
+    const targetId = dlUserId ? parseInt(dlUserId) : user?.userId;
+    if (!targetId) return;
+    setIsDownloading(true);
+    try {
+      await exportMonthly(targetId, parseInt(dlYear), parseInt(dlMonth));
+      showToast('Monthly timesheet downloaded', 'success');
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
 
   // Data fetching
   const { data: usersData, isLoading: usersLoading } = useUsers();
@@ -252,23 +286,31 @@ export default function ReportsPage() {
   // Derived data
   const users: FullUser[] = usersData?.data ?? [];
   const projects: Project[] = projectsData?.data ?? [];
-  const timesheets: Timesheet[] = reportData?.data ?? [];
+  const reportRows: {
+    employeeName: string;
+    employeeEmail: string;
+    weekRange: string;
+    weekStartDate: string;
+    weekEndDate: string;
+    status: string;
+    totalHours: number;
+    billableHours: number;
+    projectBreakdown: { projectName: string; projectCode: string; hours: number; billable: boolean }[];
+  }[] = reportData?.data?.rows ?? [];
+  const reportSummary = reportData?.data?.summary;
 
-  // Stats
+  // Stats — use backend-computed summary when available
   const { totalHours, billableHours, billablePct, totalEntries } = useMemo(() => {
-    let th = 0;
-    let bh = 0;
-    let entries = 0;
-
-    timesheets.forEach((ts) => {
-      th += ts.totalHours;
-      bh += ts.billableHours;
-      entries += ts.timeEntries?.length ?? 0;
-    });
-
-    const pct = th > 0 ? Math.round((bh / th) * 100) : 0;
-    return { totalHours: th, billableHours: bh, billablePct: pct, totalEntries: entries };
-  }, [timesheets]);
+    if (reportSummary) {
+      return {
+        totalHours: reportSummary.totalHours,
+        billableHours: reportSummary.billableHours,
+        billablePct: reportSummary.billablePercentage,
+        totalEntries: reportSummary.totalEntries,
+      };
+    }
+    return { totalHours: 0, billableHours: 0, billablePct: 0, totalEntries: 0 };
+  }, [reportSummary]);
 
   const currentFilters: ReportFilters = useMemo(() => {
     const f: ReportFilters = {};
@@ -305,8 +347,57 @@ export default function ReportsPage() {
           </p>
         </div>
         {activeFilters && (
-          <ExportButtons filters={activeFilters} disabled={timesheets.length === 0} />
+          <ExportButtons filters={activeFilters} disabled={reportRows.length === 0} />
         )}
+      </div>
+
+      {/* Monthly Timesheet Download */}
+      <div className="rounded-xl bg-white p-5 shadow-sm">
+        <h3 className="mb-4 text-sm font-semibold text-gray-700">Download Monthly Timesheet</h3>
+        <div className="flex flex-wrap items-center gap-3">
+          {myReports.length > 0 && (
+            <div className="flex items-center gap-2">
+              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Employee</label>
+              <select
+                value={dlUserId}
+                onChange={(e) => setDlUserId(e.target.value)}
+                className="appearance-none rounded-lg border border-gray-200 bg-white px-3 py-2 pr-8 text-sm text-gray-900 focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/30"
+              >
+                <option value="">{user?.name ?? 'Me'} (Myself)</option>
+                {myReports.map((m) => (
+                  <option key={m.id} value={String(m.id)}>{m.name}</option>
+                ))}
+              </select>
+            </div>
+          )}
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Month</label>
+            <select
+              value={dlMonth}
+              onChange={(e) => setDlMonth(e.target.value)}
+              className="appearance-none rounded-lg border border-gray-200 bg-white px-3 py-2 pr-8 text-sm text-gray-900 focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/30"
+            >
+              {['January','February','March','April','May','June','July','August','September','October','November','December'].map((name, i) => (
+                <option key={i + 1} value={String(i + 1)}>{name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="flex items-center gap-2">
+            <label className="text-sm font-medium text-gray-700 whitespace-nowrap">Year</label>
+            <select
+              value={dlYear}
+              onChange={(e) => setDlYear(e.target.value)}
+              className="appearance-none rounded-lg border border-gray-200 bg-white px-3 py-2 pr-8 text-sm text-gray-900 focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/30"
+            >
+              {[now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1].map((y) => (
+                <option key={y} value={String(y)}>{y}</option>
+              ))}
+            </select>
+          </div>
+          <Button onClick={handleDownloadMonthly} loading={isDownloading}>
+            Download Excel
+          </Button>
+        </div>
       </div>
 
       {/* Filters */}
@@ -367,41 +458,37 @@ export default function ReportsPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {timesheets.length === 0 ? (
+                    {reportRows.length === 0 ? (
                       <tr>
                         <td colSpan={5} className="px-5 py-12 text-center text-sm text-gray-400">
                           No results found. Adjust your filters and try again.
                         </td>
                       </tr>
                     ) : (
-                      timesheets.map((ts) => (
+                      reportRows.map((row, idx) => (
                         <tr
-                          key={ts.id}
+                          key={idx}
                           className="border-b border-gray-100 last:border-b-0 transition-colors hover:bg-gray-50"
                         >
                           <td className="px-5 py-3">
-                            <p className="text-sm font-medium text-gray-900">
-                              {ts.user?.name ?? 'Unknown'}
-                            </p>
-                            <p className="text-xs text-gray-400">{ts.user?.email ?? ''}</p>
+                            <p className="text-sm font-medium text-gray-900">{row.employeeName}</p>
+                            <p className="text-xs text-gray-400">{row.employeeEmail}</p>
                           </td>
-                          <td className="px-5 py-3 text-sm text-gray-700">
-                            {formatWeekRange(ts.weekStartDate, ts.weekEndDate)}
-                          </td>
+                          <td className="px-5 py-3 text-sm text-gray-700">{row.weekRange}</td>
                           <td className="px-5 py-3">
-                            <Badge variant={statusToBadgeVariant(ts.status)}>{ts.status}</Badge>
+                            <Badge variant={statusToBadgeVariant(row.status)}>{row.status}</Badge>
                           </td>
                           <td className="px-5 py-3 text-right font-mono text-sm font-semibold text-gray-900">
-                            {formatHours(ts.totalHours)}
+                            {formatHours(row.totalHours)}
                           </td>
                           <td className="px-5 py-3 text-right font-mono text-sm text-brand-primary">
-                            {formatHours(ts.billableHours)}
+                            {formatHours(row.billableHours)}
                           </td>
                         </tr>
                       ))
                     )}
                   </tbody>
-                  {timesheets.length > 0 && (
+                  {reportRows.length > 0 && (
                     <tfoot>
                       <tr className="border-t-2 border-gray-200 bg-gray-50 font-semibold">
                         <td className="px-5 py-3 text-sm text-gray-700" colSpan={3}>
