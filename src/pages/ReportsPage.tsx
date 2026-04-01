@@ -29,11 +29,6 @@ function statusToBadgeVariant(status: string) {
   return map[status] ?? 'draft';
 }
 
-function formatWeekRange(start: string, end: string): string {
-  const fmt = (d: string) =>
-    new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-  return `${fmt(start)} – ${fmt(end)}`;
-}
 
 function downloadBlob(blob: Blob, filename: string) {
   const url = URL.createObjectURL(blob);
