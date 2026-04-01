@@ -11,7 +11,7 @@ import { Spinner } from '../components/ui/Spinner';
 import { useSettings, useUpdateSettings } from '../hooks/useSettings';
 import { useUsers, useCreateUser, useUpdateUser, useDeleteUser } from '../hooks/useUsers';
 import { useProjects, useCreateProject, useUpdateProject, useDeleteProject, useAssignProjectEmployees } from '../hooks/useProjects';
-import { useMyReports } from '../hooks/useTeam';
+import { useMyReports, useUserManagers, useAssignManagers } from '../hooks/useTeam';
 import { useAuth } from '../context/AuthContext';
 import {
   useLeaveTypes,
@@ -258,16 +258,66 @@ function UsersTab() {
   const updateUser = useUpdateUser();
   const deleteUser = useDeleteUser();
 
+  const assignManagers = useAssignManagers();
+
   const [modalOpen, setModalOpen] = useState(false);
   const [editingUser, setEditingUser] = useState<FullUser | null>(null);
   const [deleteConfirm, setDeleteConfirm] = useState<number | null>(null);
+  const [assignManagerUserId, setAssignManagerUserId] = useState<number | null>(null);
+  const [selectedManagerIds, setSelectedManagerIds] = useState<number[]>([]);
+  const [newUserManagerId, setNewUserManagerId] = useState<string>('');
+  const [newUserManagerError, setNewUserManagerError] = useState<string>('');
 
   const users: FullUser[] = usersData?.data ?? [];
+  const managers = users.filter((u) => u.role === 'MANAGER' || u.role === 'ADMIN');
+
+  const { data: currentManagersData } = useUserManagers(assignManagerUserId ?? undefined);
+  const { data: editUserManagersData } = useUserManagers(editingUser?.role === 'EMPLOYEE' ? editingUser?.id : undefined);
+
+  const openAssignManager = (u: FullUser) => {
+    setAssignManagerUserId(u.id);
+    const current: { id: number }[] = currentManagersData?.data ?? [];
+    setSelectedManagerIds(current.map((m) => m.id));
+  };
+
+  // Sync selected IDs when data loads for the standalone assign-manager modal
+  React.useEffect(() => {
+    if (assignManagerUserId && currentManagersData) {
+      const current: { id: number }[] = currentManagersData?.data ?? [];
+      setSelectedManagerIds(current.map((m) => m.id));
+    }
+  }, [currentManagersData, assignManagerUserId]);
+
+  // Pre-populate manager dropdown when editing an employee
+  React.useEffect(() => {
+    if (editingUser && editUserManagersData) {
+      const current: { id: number }[] = editUserManagersData?.data ?? [];
+      setNewUserManagerId(current.length > 0 ? String(current[0].id) : '');
+    }
+  }, [editUserManagersData, editingUser]);
+
+  const handleAssignManagerSave = async () => {
+    if (!assignManagerUserId) return;
+    try {
+      await assignManagers.mutateAsync({ userId: assignManagerUserId, managerIds: selectedManagerIds });
+      showToast('Manager(s) assigned successfully', 'success');
+      setAssignManagerUserId(null);
+    } catch (err) {
+      showToast(getErrorMessage(err), 'error');
+    }
+  };
+
+  const toggleManager = (id: number) => {
+    setSelectedManagerIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id],
+    );
+  };
 
   const {
     register,
     handleSubmit,
     reset,
+    watch,
     formState: { errors },
   } = useForm<{
     name: string;
@@ -277,14 +327,20 @@ function UsersTab() {
     department: string;
   }>();
 
+  const watchedRole = watch('role', 'EMPLOYEE');
+
   const openAdd = () => {
     setEditingUser(null);
+    setNewUserManagerId('');
+    setNewUserManagerError('');
     reset({ name: '', email: '', password: '', role: 'EMPLOYEE', department: '' });
     setModalOpen(true);
   };
 
   const openEdit = (user: FullUser) => {
     setEditingUser(user);
+    setNewUserManagerId('');
+    setNewUserManagerError('');
     reset({
       name: user.name,
       email: user.email,
@@ -296,14 +352,25 @@ function UsersTab() {
   };
 
   const onSubmit = async (data: Record<string, unknown>) => {
+    if (data.role === 'EMPLOYEE' && !newUserManagerId) {
+      setNewUserManagerError('Manager is required for employees');
+      return;
+    }
     try {
       if (editingUser) {
         const payload = { ...data };
         if (!payload.password) delete payload.password;
         await updateUser.mutateAsync({ id: editingUser.id, data: payload });
+        if (data.role === 'EMPLOYEE' && newUserManagerId) {
+          await assignManagers.mutateAsync({ userId: editingUser.id, managerIds: [parseInt(newUserManagerId, 10)] });
+        }
         showToast('User updated', 'success');
       } else {
-        await createUser.mutateAsync(data);
+        const created = await createUser.mutateAsync(data);
+        const newId: number = created?.data?.id;
+        if (newId && data.role === 'EMPLOYEE' && newUserManagerId) {
+          await assignManagers.mutateAsync({ userId: newId, managerIds: [parseInt(newUserManagerId, 10)] });
+        }
         showToast('User created', 'success');
       }
       setModalOpen(false);
@@ -383,6 +450,11 @@ function UsersTab() {
                       <Button variant="ghost" size="sm" onClick={() => openEdit(u)}>
                         Edit
                       </Button>
+                      {u.role === 'EMPLOYEE' && (
+                        <Button variant="ghost" size="sm" onClick={() => openAssignManager(u)}>
+                          Assign Manager
+                        </Button>
+                      )}
                       <Button
                         variant="danger"
                         size="sm"
@@ -433,8 +505,38 @@ function UsersTab() {
               { value: 'MANAGER', label: 'Manager' },
               { value: 'ADMIN', label: 'Admin' },
             ]}
-            {...register('role')}
+            {...register('role', {
+              onChange: () => {
+                setNewUserManagerId('');
+                setNewUserManagerError('');
+              },
+            })}
           />
+          {watchedRole === 'EMPLOYEE' && (
+            <div className="space-y-1">
+              <label className="block text-sm font-medium text-gray-700">
+                Manager <span className="text-red-500">*</span>
+              </label>
+              <select
+                value={newUserManagerId}
+                onChange={(e) => {
+                  setNewUserManagerId(e.target.value);
+                  if (e.target.value) setNewUserManagerError('');
+                }}
+                className="w-full appearance-none rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/30"
+              >
+                <option value="">Select a manager…</option>
+                {managers.map((m) => (
+                  <option key={m.id} value={String(m.id)}>
+                    {m.name} ({m.role})
+                  </option>
+                ))}
+              </select>
+              {newUserManagerError && (
+                <p className="text-xs text-red-500">{newUserManagerError}</p>
+              )}
+            </div>
+          )}
           <Input label="Department" {...register('department')} />
           <div className="flex items-center justify-end gap-3 pt-2">
             <Button variant="ghost" size="sm" onClick={() => setModalOpen(false)} type="button">
@@ -445,6 +547,50 @@ function UsersTab() {
             </Button>
           </div>
         </form>
+      </Modal>
+
+      {/* Assign Manager Modal */}
+      <Modal
+        isOpen={assignManagerUserId !== null}
+        onClose={() => setAssignManagerUserId(null)}
+        title={`Assign Manager — ${users.find((u) => u.id === assignManagerUserId)?.name ?? ''}`}
+        size="md"
+      >
+        <div className="space-y-4">
+          {managers.length === 0 ? (
+            <p className="text-sm text-gray-500">No managers available.</p>
+          ) : (
+            <div className="max-h-64 overflow-y-auto divide-y divide-gray-100 rounded-lg border border-gray-200">
+              {managers.map((m) => (
+                <label
+                  key={m.id}
+                  className="flex cursor-pointer items-center gap-3 px-4 py-3 hover:bg-gray-50"
+                >
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 rounded border-gray-300 text-brand-primary"
+                    checked={selectedManagerIds.includes(m.id)}
+                    onChange={() => toggleManager(m.id)}
+                  />
+                  <span className="text-sm text-gray-800">{m.name}</span>
+                  <span className="ml-auto text-xs text-gray-400">{m.role}</span>
+                </label>
+              ))}
+            </div>
+          )}
+          <div className="flex items-center justify-end gap-3 pt-2">
+            <Button variant="ghost" size="sm" onClick={() => setAssignManagerUserId(null)}>
+              Cancel
+            </Button>
+            <Button
+              onClick={handleAssignManagerSave}
+              loading={assignManagers.isPending}
+              disabled={managers.length === 0}
+            >
+              Save
+            </Button>
+          </div>
+        </div>
       </Modal>
 
       {/* Delete Confirmation Modal */}
