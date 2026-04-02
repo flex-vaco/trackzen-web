@@ -22,7 +22,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { timesheetsService } from '../services/timesheets.service';
 import { exportMonthly } from '../services/reports.service';
-import { leaveCalendarService } from '../services/leaveCalendar.service';
+import { leaveService } from '../services/leave.service';
 import { teamService } from '../services/team.service';
 import { usersService } from '../services/users.service';
 import {
@@ -77,14 +77,17 @@ function getHolidayFlags(weekStart: Date, holidays: Holiday[]): { isHoliday: boo
 
 function getLeaveFlags(
   weekStart: Date,
-  leaveEntries: { userId: number; leaveTypeName: string; date: string }[],
-  currentUserId: number,
+  approvedLeave: { startDate: string; endDate: string; leaveType?: { name: string } }[],
 ): { isLeaveDay: boolean; leaveTypeName?: string }[] {
   return Array.from({ length: 7 }, (_, i) => {
     const day = addDays(weekStart, i);
-    const dayStr = day.toISOString().split('T')[0];
-    const match = leaveEntries.find((e) => e.userId === currentUserId && e.date === dayStr);
-    return { isLeaveDay: !!match, leaveTypeName: match?.leaveTypeName };
+    const dayStr = formatISO(day);
+    const match = approvedLeave.find((lr) => {
+      const start = lr.startDate.split('T')[0];
+      const end = lr.endDate.split('T')[0];
+      return dayStr >= start && dayStr <= end;
+    });
+    return { isLeaveDay: !!match, leaveTypeName: match?.leaveType?.name };
   });
 }
 
@@ -140,18 +143,18 @@ export default function TimesheetPage() {
 
   const weekStartISO = formatISO(currentWeekStart);
   const weekEndISO = formatISO(weekEnd);
-  const { data: leaveCalendarData } = useQuery({
-    queryKey: ['leave-calendar', weekStartISO, weekEndISO],
-    queryFn: () => leaveCalendarService.getCalendar(weekStartISO, weekEndISO),
+  const { data: approvedLeaveData } = useQuery({
+    queryKey: ['my-approved-leave', weekStartISO, weekEndISO],
+    queryFn: () => leaveService.list({ status: 'APPROVED', limit: 100 }),
     select: (res: Record<string, unknown>) =>
-      (res?.data ?? []) as { userId: number; leaveTypeName: string; date: string }[],
+      (res?.data ?? []) as { startDate: string; endDate: string; leaveType?: { name: string } }[],
   });
   const leaveFlags = useMemo(
     () =>
-      leaveCalendarData && user
-        ? getLeaveFlags(currentWeekStart, leaveCalendarData, user.userId)
+      approvedLeaveData
+        ? getLeaveFlags(currentWeekStart, approvedLeaveData)
         : Array.from({ length: 7 }, () => ({ isLeaveDay: false as const })),
-    [currentWeekStart, leaveCalendarData, user],
+    [currentWeekStart, approvedLeaveData],
   );
 
   const { data: timesheet, isLoading } = useQuery({
