@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useToast } from '../context/ToastContext';
 import { StatCard } from '../components/ui/StatCard';
 import { Badge } from '../components/ui/Badge';
@@ -12,10 +13,11 @@ import {
   useApproveTimesheet,
   useRejectTimesheet,
 } from '../hooks/useApprovals';
+import { useHolidays } from '../hooks/useHolidays';
+import { leaveCalendarService } from '../services/leaveCalendar.service';
 import { formatHours } from '../utils/formatHours';
-
 import { getErrorMessage } from '../utils/getErrorMessage';
-import type { Timesheet, ApprovalStats } from '../types';
+import type { Timesheet, ApprovalStats, Holiday } from '../types';
 
 /* ---------- helpers ---------- */
 
@@ -45,6 +47,45 @@ function formatWeekRange(start: string, end: string): string {
   const fmt = (d: string) =>
     new Date(d).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   return `${fmt(start)} – ${fmt(end)}`;
+}
+
+function addDays(date: Date, days: number): Date {
+  const d = new Date(date);
+  d.setDate(d.getDate() + days);
+  return d;
+}
+
+function toLocalISO(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function buildDayFlags(
+  weekStart: Date,
+  holidays: Holiday[],
+  leaveEntries: { userId: number; leaveTypeName: string; date: string }[],
+  employeeUserId: number,
+): { isHoliday: boolean; holidayName?: string; isLeaveDay: boolean; leaveTypeName?: string }[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const day = addDays(weekStart, i);
+    const dayStr = toLocalISO(day);
+
+    const holiday = holidays.find((h) => {
+      const hd = new Date(h.date);
+      return toLocalISO(hd) === dayStr;
+    });
+
+    const leave = leaveEntries.find((e) => e.userId === employeeUserId && e.date === dayStr);
+
+    return {
+      isHoliday: !!holiday,
+      holidayName: holiday?.name,
+      isLeaveDay: !!leave,
+      leaveTypeName: leave?.leaveTypeName,
+    };
+  });
 }
 
 /* ---------- ApprovalStatBar ---------- */
@@ -125,6 +166,27 @@ function TimesheetApprovalCard({ timesheet, onApprove, onReject, approving }: Ap
 
   const entries = timesheet.timeEntries ?? [];
 
+  const weekStart = new Date(timesheet.weekStartDate);
+  const weekEnd = new Date(timesheet.weekEndDate);
+  const weekStartISO = toLocalISO(weekStart);
+  const weekEndISO = toLocalISO(weekEnd);
+  const year = weekStart.getFullYear();
+
+  const { data: holidaysData } = useHolidays(year);
+  const holidays: Holiday[] = holidaysData?.data ?? [];
+
+  const { data: leaveCalendarData } = useQuery({
+    queryKey: ['leave-calendar', weekStartISO, weekEndISO],
+    queryFn: () => leaveCalendarService.getCalendar(weekStartISO, weekEndISO),
+    select: (res: Record<string, unknown>) =>
+      (res?.data ?? []) as { userId: number; leaveTypeName: string; date: string }[],
+  });
+
+  const dayFlags = useMemo(
+    () => buildDayFlags(weekStart, holidays, leaveCalendarData ?? [], timesheet.userId),
+    [weekStart, holidays, leaveCalendarData, timesheet.userId],
+  );
+
   return (
     <div className="overflow-hidden rounded-xl bg-white shadow-sm transition-shadow hover:shadow-md">
       {/* Header */}
@@ -177,14 +239,32 @@ function TimesheetApprovalCard({ timesheet, onApprove, onReject, approving }: Ap
                   <th className="px-4 py-2 text-xs font-semibold uppercase text-gray-500">
                     Project
                   </th>
-                  {DAY_KEYS.map((day) => (
-                    <th
-                      key={day}
-                      className="px-2 py-2 text-center text-xs font-semibold uppercase text-gray-500"
-                    >
-                      {DAY_LABELS[day]}
-                    </th>
-                  ))}
+                  {DAY_KEYS.map((day, i) => {
+                    const flag = dayFlags[i];
+                    const headerColor = flag?.isHoliday
+                      ? 'text-amber-600'
+                      : flag?.isLeaveDay
+                        ? 'text-green-700'
+                        : 'text-gray-500';
+                    return (
+                      <th
+                        key={day}
+                        className={`px-2 py-2 text-center text-xs font-semibold uppercase ${headerColor}`}
+                      >
+                        {DAY_LABELS[day]}
+                        {flag?.isHoliday && (
+                          <div className="text-[10px] font-normal normal-case text-amber-500 leading-tight">
+                            {flag.holidayName}
+                          </div>
+                        )}
+                        {flag?.isLeaveDay && (
+                          <div className="text-[10px] font-normal normal-case text-green-600 leading-tight">
+                            {flag.leaveTypeName}
+                          </div>
+                        )}
+                      </th>
+                    );
+                  })}
                   <th className="px-3 py-2 text-right text-xs font-semibold uppercase text-gray-500">
                     Total
                   </th>
@@ -212,14 +292,30 @@ function TimesheetApprovalCard({ timesheet, onApprove, onReject, approving }: Ap
                           </span>
                         )}
                       </td>
-                      {DAY_KEYS.map((day) => (
-                        <td
-                          key={day}
-                          className="px-2 py-2 text-center font-mono text-xs text-gray-700"
-                        >
-                          {(entry[`${day}Hours` as keyof typeof entry] as number) || '-'}
-                        </td>
-                      ))}
+                      {DAY_KEYS.map((day, i) => {
+                        const hours = (entry[`${day}Hours` as keyof typeof entry] as number) || 0;
+                        const flag = dayFlags[i];
+                        return (
+                          <td
+                            key={day}
+                            className={`px-2 py-2 text-center font-mono text-xs ${
+                              flag?.isHoliday
+                                ? 'bg-amber-50 text-amber-500'
+                                : flag?.isLeaveDay
+                                  ? 'bg-green-50 text-green-600'
+                                  : 'text-gray-700'
+                            }`}
+                          >
+                            {hours > 0
+                              ? hours
+                              : flag?.isHoliday
+                                ? flag.holidayName ?? 'Holiday'
+                                : flag?.isLeaveDay
+                                  ? flag.leaveTypeName ?? 'Leave'
+                                  : '-'}
+                          </td>
+                        );
+                      })}
                       <td className="px-3 py-2 text-right font-mono text-xs font-semibold text-gray-900">
                         {formatHours(rowTotal)}
                       </td>
