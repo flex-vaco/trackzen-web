@@ -695,7 +695,11 @@ function ProjectsTab() {
         await updateProject.mutateAsync({ id: editingProject.id, data });
         showToast('Project updated', 'success');
       } else {
-        await createProject.mutateAsync(data);
+        const payload = { ...data };
+        if (user?.role === 'MANAGER') {
+          payload.managerIds = [user.userId];
+        }
+        await createProject.mutateAsync(payload);
         showToast('Project created', 'success');
       }
       setModalOpen(false);
