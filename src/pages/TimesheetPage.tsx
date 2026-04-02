@@ -22,6 +22,7 @@ import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { timesheetsService } from '../services/timesheets.service';
 import { exportMonthly } from '../services/reports.service';
+import { leaveCalendarService } from '../services/leaveCalendar.service';
 import { teamService } from '../services/team.service';
 import { usersService } from '../services/users.service';
 import {
@@ -74,6 +75,19 @@ function getHolidayFlags(weekStart: Date, holidays: Holiday[]): { isHoliday: boo
   });
 }
 
+function getLeaveFlags(
+  weekStart: Date,
+  leaveEntries: { userId: number; leaveTypeName: string; date: string }[],
+  currentUserId: number,
+): { isLeaveDay: boolean; leaveTypeName?: string }[] {
+  return Array.from({ length: 7 }, (_, i) => {
+    const day = addDays(weekStart, i);
+    const dayStr = day.toISOString().split('T')[0];
+    const match = leaveEntries.find((e) => e.userId === currentUserId && e.date === dayStr);
+    return { isLeaveDay: !!match, leaveTypeName: match?.leaveTypeName };
+  });
+}
+
 /* ---------- main page ---------- */
 
 export default function TimesheetPage() {
@@ -123,6 +137,22 @@ export default function TimesheetPage() {
   const weekEnd = getWeekEnd(currentWeekStart);
   const dayLabels = getDayLabels(currentWeekStart);
   const holidayFlags = useMemo(() => getHolidayFlags(currentWeekStart, holidays), [currentWeekStart, holidays]);
+
+  const weekStartISO = formatISO(currentWeekStart);
+  const weekEndISO = formatISO(weekEnd);
+  const { data: leaveCalendarData } = useQuery({
+    queryKey: ['leave-calendar', weekStartISO, weekEndISO],
+    queryFn: () => leaveCalendarService.getCalendar(weekStartISO, weekEndISO),
+    select: (res: Record<string, unknown>) =>
+      (res?.data ?? []) as { userId: number; leaveTypeName: string; date: string }[],
+  });
+  const leaveFlags = useMemo(
+    () =>
+      leaveCalendarData && user
+        ? getLeaveFlags(currentWeekStart, leaveCalendarData, user.userId)
+        : Array.from({ length: 7 }, () => ({ isLeaveDay: false as const })),
+    [currentWeekStart, leaveCalendarData, user],
+  );
 
   const { data: timesheet, isLoading } = useQuery({
     queryKey: ['timesheets', timesheetId],
@@ -486,15 +516,18 @@ export default function TimesheetPage() {
                   const dayKey = DAY_KEYS[dayIndex];
                   const isWeekend = dayIndex >= 5;
                   const holiday = holidayFlags[dayIndex];
+                  const leaveDay = leaveFlags[dayIndex];
                   const dayEnts = entriesByDay[dayIndex];
                   const dayTotal = dayTotals[dayIndex];
                   const dayOT = Math.max(0, dayTotal - STANDARD_HOURS);
 
-                  const rowBgClass = holiday?.isHoliday
-                    ? 'bg-amber-50'
-                    : isWeekend
-                      ? 'bg-yellow-50/60'
-                      : '';
+                  const rowBgClass = leaveDay?.isLeaveDay
+                    ? 'bg-green-50'
+                    : holiday?.isHoliday
+                      ? 'bg-amber-50'
+                      : isWeekend
+                        ? 'bg-yellow-50/60'
+                        : '';
 
                   // Empty day row
                   if (dayEnts.length === 0) {
@@ -504,15 +537,18 @@ export default function TimesheetPage() {
                           <span className="font-mono text-xs text-gray-400">{dayLabel.date}</span>
                         </td>
                         <td className="px-3 py-3">
-                          <span className={`text-sm font-medium ${holiday?.isHoliday ? 'text-amber-600' : isWeekend ? 'text-amber-600' : 'text-gray-700'}`}>
+                          <span className={`text-sm font-medium ${holiday?.isHoliday ? 'text-amber-600' : isWeekend ? 'text-amber-600' : leaveDay?.isLeaveDay ? 'text-green-700' : 'text-gray-700'}`}>
                             {dayLabel.label}
                           </span>
                           {holiday?.isHoliday && (
                             <div className="text-xs text-amber-500 font-normal mt-0.5">{holiday.name}</div>
                           )}
+                          {leaveDay?.isLeaveDay && (
+                            <div className="text-xs text-green-600 font-normal mt-0.5">{leaveDay.leaveTypeName}</div>
+                          )}
                         </td>
                         <td className="px-3 py-3" colSpan={2}>
-                          {canEdit && !isWeekend && !holiday?.isHoliday ? (
+                          {canEdit && !isWeekend && !holiday?.isHoliday && !leaveDay?.isLeaveDay ? (
                             <button
                               onClick={() => setAddEntryDayIndex(dayIndex)}
                               className="text-brand-primary/40 hover:text-brand-primary text-xs font-medium transition-colors"
@@ -520,8 +556,8 @@ export default function TimesheetPage() {
                               + Add entry
                             </button>
                           ) : (
-                            <span className={`text-xs italic ${isWeekend ? 'text-amber-400/80' : holiday?.isHoliday ? 'text-amber-500/60' : 'text-gray-300'}`}>
-                              {isWeekend ? 'Weekend' : holiday?.isHoliday ? holiday.name : '\u2014'}
+                            <span className={`text-xs italic ${isWeekend ? 'text-amber-400/80' : holiday?.isHoliday ? 'text-amber-500/60' : leaveDay?.isLeaveDay ? 'text-green-600/70' : 'text-gray-300'}`}>
+                              {isWeekend ? 'Weekend' : holiday?.isHoliday ? holiday.name : leaveDay?.isLeaveDay ? leaveDay.leaveTypeName : '\u2014'}
                             </span>
                           )}
                         </td>
@@ -560,6 +596,7 @@ export default function TimesheetPage() {
                         rowBgClass={entryRowBg}
                         canEdit={canEdit}
                         holiday={holiday}
+                        leaveDay={leaveDay}
                         isWeekend={isWeekend}
                         isLeave={isLeave}
                         onAddEntry={() => setAddEntryDayIndex(dayIndex)}
@@ -744,6 +781,7 @@ function DayEntryRow({
   rowBgClass,
   canEdit,
   holiday,
+  leaveDay,
   isWeekend,
   isLeave,
   onAddEntry,
@@ -765,6 +803,7 @@ function DayEntryRow({
   rowBgClass: string;
   canEdit: boolean;
   holiday: { isHoliday: boolean; name?: string };
+  leaveDay: { isLeaveDay: boolean; leaveTypeName?: string };
   isWeekend: boolean;
   isLeave: boolean;
   onAddEntry: () => void;
@@ -791,7 +830,7 @@ function DayEntryRow({
   const entryOT = isLastInDay ? dayOT : 0;
   const entryTotal = isLastInDay ? dayTotal : entryHours;
 
-  const dayLabelColor = holiday?.isHoliday ? 'text-amber-600' : isWeekend ? 'text-amber-600' : 'text-gray-700';
+  const dayLabelColor = holiday?.isHoliday ? 'text-amber-600' : isWeekend ? 'text-amber-600' : leaveDay?.isLeaveDay ? 'text-green-700' : 'text-gray-700';
   const projectColor = isLeave ? 'text-green-700' : 'text-gray-800';
   const codeColor = isLeave ? 'text-green-600/70' : 'text-gray-400';
 
@@ -809,6 +848,9 @@ function DayEntryRow({
             <span className={`text-sm font-medium ${dayLabelColor}`}>{dayLabel.label}</span>
             {holiday?.isHoliday && (
               <div className="text-xs text-amber-500 mt-0.5">{holiday.name}</div>
+            )}
+            {leaveDay?.isLeaveDay && (
+              <div className="text-xs text-green-600 mt-0.5">{leaveDay.leaveTypeName}</div>
             )}
           </div>
         )}
